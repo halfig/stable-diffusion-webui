@@ -1,5 +1,6 @@
 import base64
 import io
+import os
 import time
 import datetime
 import uvicorn
@@ -11,7 +12,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from secrets import compare_digest
 
 import modules.shared as shared
-from modules import sd_samplers, deepbooru, sd_hijack, images, scripts, ui, postprocessing
+from modules import sd_samplers, deepbooru, extras, sd_hijack, images, scripts, ui, postprocessing
 from modules.api.models import *
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img, process_images
 from modules.textual_inversion.textual_inversion import create_embedding, train_embedding
@@ -150,6 +151,7 @@ class Api:
         self.add_api_route("/sdapi/v1/train/embedding", self.train_embedding, methods=["POST"], response_model=TrainResponse)
         self.add_api_route("/sdapi/v1/train/hypernetwork", self.train_hypernetwork, methods=["POST"], response_model=TrainResponse)
         self.add_api_route("/sdapi/v1/memory", self.get_memory, methods=["GET"], response_model=MemoryResponse)
+        self.add_api_route("/sdapi/v1/mergemodel", self.merge_model, methods=["POST"], response_model=SDModelItem)
 
     def add_api_route(self, path: str, endpoint, **kwargs):
         if shared.cmd_opts.api_auth:
@@ -545,6 +547,62 @@ class Api:
         except Exception as err:
             cuda = { 'error': f'{err}' }
         return MemoryResponse(ram = ram, cuda = cuda)
+
+    def merge_model(self, args: dict):
+        primary_model_name = ""
+        secondary_model_name = ""
+        tertiary_model_name = ""
+        interp_method = "Weighted sum"
+        multiplier = 0.5
+        save_as_half = False
+        custom_name = ""
+        checkpoint_format = "ckpt"
+        config_source = 0
+        bake_in_vae = None
+        discard_weights = ""
+
+        if "primary_model_name" in args:
+            primary_model_name = args["primary_model_name"]
+        if "secondary_model_name" in args:
+            secondary_model_name = args["secondary_model_name"]
+        if "tertiary_model_name" in args:
+            tertiary_model_name = args["tertiary_model_name"]
+        if "interp_method" in args:
+            interp_method = args["interp_method"]
+        if "multiplier" in args:
+            multiplier = args["multiplier"]
+        if "save_as_half" in args:
+            save_as_half = args["save_as_half"]
+        if "custom_name" in args:
+            custom_name = args["custom_name"]
+        if "checkpoint_format" in args:
+            checkpoint_format = args["checkpoint_format"]
+        if "config_source" in args:
+            config_source = args["config_source"]
+        if "bake_in_vae" in args:
+            bake_in_vae = args["bake_in_vae"]
+        if "discard_weights" in args:
+            discard_weights = args["discard_weights"]
+
+        result = extras.run_modelmerger(
+            None,
+            primary_model_name,
+            secondary_model_name,
+            tertiary_model_name,
+            interp_method,
+            multiplier,
+            save_as_half,
+            custom_name,
+            checkpoint_format,
+            config_source,
+            bake_in_vae,
+            discard_weights
+        )
+
+        return SDModelItem(
+            title=result[0]["choices"][1],
+            model_name=str(result[0]["choices"][1])[:-5],
+            filename=os.path.abspath(os.getcwd()) + "/models/Stable-diffusion/" + result[0]["choices"][1])
 
     def launch(self, server_name, port):
         self.app.include_router(self.router)
