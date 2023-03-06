@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import time
 import datetime
@@ -12,13 +13,13 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from secrets import compare_digest
 
 import modules.shared as shared
-from modules import sd_samplers, deepbooru, extras, sd_hijack, images, scripts, ui, postprocessing
+from modules import sd_samplers, deepbooru, extras, sd_hijack, images, scripts, ui, postprocessing, scripts_postprocessing
 from modules.api.models import *
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img, process_images
 from modules.textual_inversion.textual_inversion import create_embedding, train_embedding
 from modules.textual_inversion.preprocess import preprocess
 from modules.hypernetworks.hypernetwork import create_hypernetwork, train_hypernetwork
-from PIL import PngImagePlugin,Image
+from PIL import PngImagePlugin, Image
 from modules.sd_models import checkpoints_list
 from modules.sd_models_config import find_checkpoint_config_near_filename
 from modules.realesrgan_model import get_realesrgan_models
@@ -26,6 +27,9 @@ from modules import devices
 from typing import List
 import piexif
 import piexif.helper
+from scripts import postprocessing_upscale
+from pathlib import PurePosixPath
+
 
 def upscaler_to_index(name: str):
     try:
@@ -152,6 +156,7 @@ class Api:
         self.add_api_route("/sdapi/v1/train/hypernetwork", self.train_hypernetwork, methods=["POST"], response_model=TrainResponse)
         self.add_api_route("/sdapi/v1/memory", self.get_memory, methods=["GET"], response_model=MemoryResponse)
         self.add_api_route("/sdapi/v1/mergemodel", self.merge_model, methods=["POST"], response_model=SDModelItem)
+        self.add_api_route("/sdapi/v1/img-upscale", self.img_upscale, methods=["POST"], response_model=ImageToImageResponse)
 
     def add_api_route(self, path: str, endpoint, **kwargs):
         if shared.cmd_opts.api_auth:
@@ -603,6 +608,69 @@ class Api:
             title=result[0]["choices"][1],
             model_name=str(result[0]["choices"][1])[:-5],
             filename=os.path.abspath(os.getcwd()) + "/models/Stable-diffusion/" + result[0]["choices"][1])
+
+    def img_upscale(self, args: dict):
+
+        image = None
+        upscale_mode = 1
+        upscale_by = 2.0
+        upscale_to_width = None
+        upscale_to_height = None
+        upscale_crop = False
+        upscaler_1_name = None
+        upscaler_2_name = None
+        upscaler_2_visibility = 0.0
+        output_path = os.getcwd()
+
+        if "image" in args:
+            from PIL import Image
+            import numpy as np
+            im = Image.open(args["image"])
+            a = np.asarray(im)
+            a2 = Image.fromarray(a)
+            image = scripts_postprocessing.PostprocessedImage(a2)
+        if "upscale_mode" in args:
+            upscale_mode = args["upscale_mode"]
+        if "upscale_by" in args:
+            upscale_by = args["upscale_by"]
+        if "upscale_to_width" in args:
+            upscale_to_width = args["upscale_to_width"]
+        if "upscale_to_height" in args:
+            upscale_to_height = args["upscale_to_height"]
+        if "upscale_crop" in args:
+            upscale_crop = args["upscale_crop"]
+        if "upscaler_1_name" in args:
+            upscaler_1_name = args["upscaler_1_name"]
+        if "upscaler_2_name" in args:
+            upscaler_2_name = args["upscaler_2_name"]
+        if "upscaler_2_visibility" in args:
+            upscaler_2_visibility = args["upscaler_2_visibility"]
+        if "output_path" in args:
+            output_path = args["output_path"]
+            if not os.path.exists(output_path):
+                os.mkdir(output_path)
+
+        upscale = postprocessing_upscale.ScriptPostprocessingUpscale()
+        response = upscale.process(
+            image,
+            upscale_mode,
+            upscale_by,
+            upscale_to_width,
+            upscale_to_height,
+            upscale_crop,
+            upscaler_1_name,
+            upscaler_2_name,
+            upscaler_2_visibility
+        )
+
+        save_file_name = PurePosixPath(args["image"]).stem + "-" + image.info['Postprocess upscale to'] + '.png'
+        save_path = output_path + "/" + save_file_name
+        image.image.save(save_path)
+
+        response = ImageToImageResponse(images=[json.dumps({'filename': save_file_name, 'file_path': output_path})],
+                                        parameters={},
+                                        info=json.dumps(image.info))
+        return response
 
     def launch(self, server_name, port):
         self.app.include_router(self.router)
